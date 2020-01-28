@@ -23,6 +23,17 @@
 
 ********************************************************************************
 
+global cd_folder ""
+global cd_data "$cd_folder\Data"
+global cd_graphs "$cd_folder\Graphs"
+global cd_tables "$cd_folder\Tables"
+
+cd "$cd_data"
+
+*ssc install bspline
+*ssc install metan
+*ssc install metareg
+
 *Merging and analysis of IPD
 {
 *Replace biopsy to 0 if the PSA is below the study threshold
@@ -60,13 +71,22 @@ gen advanced_pca = 1 if pca == 1 & ((pcat>=7 & pcat !=. )| (pcan == 1 & pcan !=.
 replace advanced_pca = 0 if pca == 1 & advanced_pca == .
 replace advanced_pca = 0 if pca == 0 
 
+*Ethnicity - Krimpen are almost all white
+replace ethnicity = 1 if study == 2
+keep if ethnicity == 1
+
+*Screening arm of PLCO only
+drop if arm == 2
+
+*Keep only control arm of PCPT
+drop if treatment == 1
+
 save "IPD All clear.dta", replace
 
 **********
 
 *IPD Meta-analysis without imputation (complete case analysis)
 
-cd ""
 use "IPD All clear.dta", clear
 set more off
 drop if bmi == .
@@ -74,6 +94,7 @@ drop if psa == .
 replace ethnicity = 1 if study == 2
 drop if ethnicity != 1
 replace pca = 0 if pca == . //Assume that all non-biopsied are also controls
+replace advanced_pca = 0 if advanced_pca == . //Assume that all non-biopsied are also controls for advanced PCa too
 gen psa5 = .
 gen psa5_se = .
 gen psa5_nopca = .
@@ -116,166 +137,28 @@ keep psa5-advanced5_se study2
 rename study2 study
 drop if psa5 == .
 
-metan psa5 psa5_se, label(namevar=study) texts(200) xlabel(-0.1, -0.08, -0.06, -0.04, -0.02, 0) force xtitle("Log-PSA change per 5 kg/m{superscript:2} increase in BMI", size(small)) title("Non-imputed PSA (direct)", size(medium))
-graph export "Graphs\PSA non-imputed.tif", as(tif) replace
-metan psa5_nopca psa5_se_nopca, label(namevar=study) texts(200) xlabel(-0.1, -0.08, -0.06, -0.04, -0.02, 0) force xtitle("Log-PSA change per 5 kg/m{superscript:2} increase in BMI", size(small)) title("Non-imputed PSA (total)", size(medium))
-graph export "Graphs\PSA non-imputed (no PCa).tif", as(tif) replace
-metan pca5 pca5_se, label(namevar=study) texts(200) xlabel(0.8, 0.85, 0.9, 0.95, 1, 1.05, 1.1) force eform xtitle("OR per 5 kg/m{superscript:2} increase in BMI", size(small)) title("Non-imputed PCa", size(medium))
-graph export "Graphs\PCa non-imputed.tif", as(tif) replace
-metan advanced5 advanced5_se, label(namevar=study) texts(200) xlabel(0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.2, 1.4) force eform xtitle("OR for advanced PCa per 5 kg/m{superscript:2} increase in BMI", size(small)) title("Non-imputed Advanced PCa", size(medium))
-graph export "Graphs\Advanced PCa non-imputed.tif", as(tif) replace
-metan pcapsa pcapsa_se, label(namevar=study) texts(200) xlabel(-2, 0, 2, 4, 6, 8, 10) force xtitle("PSA change for PCa", size(small)) title("Non-imputed PSA-PCa", size(medium))
-graph export "Graphs\PCaPSA.tif", as(tif) replace
-metan apcapsa apcapsa_se, label(namevar=study) texts(200) xlabel(-2, 0, 2, 4, 6, 8, 10) force xtitle("PSA change for advanced PCa", size(small)) title("Non-imputed PSA-advanced PCa", size(medium))
-graph export "Graphs\aPCaPSA.tif", as(tif) replace
+gen type = "Not Imputed"
 
+preserve
+keep pca5 pca5_se study type
+rename pca5 md5
+rename pca5_se md5_se
+gen outcome = "All"
+save "Complete case - pca.dta", replace
+restore
 
-****************************************
-*Test to see if BMI and PSA are related similarly across studies
-use "IPD All clear.dta", clear
-
-sort study bmi
-gen logpsa_age = .
-gen study_i = .
-gen se = .
-gen beta = .
-foreach i in 2 3 4 5 {
-	reg logpsa age if study == `i'
-	local beta = _b[age]
-	replace logpsa_age = logpsa+logpsa*(age-60)*`beta' if study == `i'
-	bspline if study == `i', xvar(bmi) knots(0 24.8 27 30 100) p(3) gen(_study_`i')
-	qui reg logpsa_age _study_`i'*, noconstant
-	predict study_`i'
-	drop _study_`i'*
-	qui reg logpsa_age bmi if study == `i'
-	qui replace study_i = `i' in `i'
-	qui replace beta = _b[bmi] in `i'
-	qui replace se = _se[bmi] in `i'	
-}
-
-*Test of whether the association between BMI and logPSA is different between studies
-metan beta se
-graph export "Graphs\BMI v PSA\metan betas.tif", as(tif) replace
-
-*Cubic splines
-twoway (scatter logpsa_age bmi) (line study_2 bmi) (line study_3 bmi) (line study_4 bmi) (line study_5 bmi) , legend(order(2 3 4 5) label(2 "Krimpen") label(3 "PCPT") label(4 "PLCO") label(5 "ProtecT")) note("Cubic splines, knots at 24.8, 27, 30")
-graph export "Graphs\BMI v PSA\Cubic Splines Scatter.tif", as(tif) replace
-twoway (line study_2 bmi) (line study_3 bmi) (line study_4 bmi) (line study_5 bmi) , legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT")) note("Cubic splines, knots at 24.8, 27, 30")
-graph export "Graphs\BMI v PSA\Cubic Splines No Scatter.tif", as(tif) replace
-twoway (line study_2 bmi if bmi > 19.8 & bmi <40.1) (line study_3 bmi if bmi > 19.8 & bmi <40.1) (line study_4 bmi if bmi > 19.8 & bmi <40.1) (line study_5 bmi if bmi > 19.8 & bmi <40.1) , ytitle("log PSA") legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT")) 
-graph export "Graphs\BMI v PSA\Cubic Splines No Scatter Limited Range.tif", as(tif) replace
-
-*No cubic splines
-twoway (scatter logpsa_age bmi) (lfit logpsa_age bmi if study == 2) (lfit logpsa_age bmi if study == 3) (lfit logpsa_age bmi if study == 4) (lfit logpsa_age bmi if study == 5), legend(order(2 3 4 5) label(2 "Krimpen") label(3 "PCPT") label(4 "PLCO") label(5 "ProtecT"))
-graph export "Graphs\BMI v PSA\Linear Scatter.tif", as(tif) replace
-twoway (lfit logpsa_age bmi if study == 2) (lfit logpsa_age bmi if study == 3) (lfit logpsa_age bmi if study == 4) (lfit logpsa_age bmi if study == 5), legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT"))
-graph export "Graphs\BMI v PSA\Linear No Scatter.tif", as(tif) replace
-twoway (lfit logpsa_age bmi if study == 2 & bmi > 19.8 & bmi <40.1) (lfit logpsa_age bmi if study == 3 & bmi > 19.8 & bmi <40.1) (lfit logpsa_age bmi if study == 4 & bmi > 19.8 & bmi <40.1) (lfit logpsa_age bmi if study == 5 & bmi > 19.8 & bmi <40.1), legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT"))
-graph export "Graphs\BMI v PSA\Linear No Scatter Limited Range.tif", as(tif) replace
-
-*Test to see if BMI and PCa are related similarly across studies
-use "IPD All clear.dta", clear
-
-sort study bmi
-gen logpsa_age = .
-gen study_i = .
-gen se = .
-gen beta = .
-foreach i in 2 3 4 5 {
-	bspline if study == `i', xvar(bmi) knots(0 24.8 27 30 100) p(3) gen(_study_`i')
-	qui logit pca _study_`i'*, noconstant
-	predict study_`i'
-	qui logit pca bmi if study == `i'
-	qui replace study_i = `i' in `i'
-	qui replace beta = _b[bmi] in `i'
-	qui replace se = _se[bmi] in `i'	
-}
-
-*Cubic spline
-twoway (line study_2 bmi if bmi > 19.8 & bmi <40.1) (line study_3 bmi if bmi > 19.8 & bmi <40.1) (line study_4 bmi if bmi > 19.8 & bmi <40.1) (line study_5 bmi if bmi > 19.8 & bmi <40.1) , ytitle("Prostate Cancer Risk") legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT")) 
-graph export "Graphs\Final graphs\For processing\Cubic Splines No Scatter Limited Range - PCa.tif", as(tif) replace
-
-*Test to see if PSA and PCa are related similarly across studies
-use "IPD All clear.dta", clear
-
-sort study psa
-gen study_i = .
-gen se = .
-gen beta = .
-foreach i in 2 3 4 5 {
-	if `i' == 2 {
-		bspline if study == `i' & psa > 0.2 & psa < 13.3, xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
-	}
-	if `i' == 3 {
-		bspline if study == `i' & psa > 0.3 & psa <=3, xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
-	}	
-	if `i' == 4 {
-		bspline if study == `i' & psa > 4, xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
-	}
-	if `i' == 5 {
-		bspline if study == `i' & psa > 3, xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
-	}
-	qui logit pca _study_`i'*, noconstant
-	predict study_`i'
-	drop _study_`i'*
-	qui logit pca logpsa if study == `i'
-	qui replace study_i = `i' in `i'
-	qui replace beta = _b[logpsa] in `i'
-	qui replace se = _se[logpsa] in `i'	
-}
-
-*Cubic spline
-twoway (line study_2 logpsa if logpsa > -1.6 & logpsa < 2.4) (line study_3 logpsa if logpsa > -1.6 & logpsa < 2.4) (line study_4 logpsa if psa > 4 & logpsa < 2.4) (line study_5 logpsa if psa > 3 & logpsa < 2.4), xtitle("Log-PSA") ytitle("Prostate Cancer Risk") legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT")) xline(1.099 1.386)
-graph export "Graphs\Final graphs\Appendix\Cubic Splines PCa-PSA.tif", as(tif) replace
-
-
-*Test to see if PSA and PCa are related similarly across studies (IMPUTED)
-use "Imputed data (linear).dta", clear
-
-keep if _mi_m == 1
-replace psa = exp(logpsa)
-sort study logpsa
-gen study_i = .
-gen se = .
-gen beta = .
-foreach i in 2 3 4 5 {
-	if `i' == 2 {
-		bspline if study == `i' , xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
-	}
-	if `i' == 3 {
-		bspline if study == `i' , xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
-	}	
-	if `i' == 4 {
-		bspline if study == `i' , xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
-	}
-	if `i' == 5 {
-		bspline if study == `i' , xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
-	}
-	qui logit pca _study_`i'*, noconstant
-	predict study_`i'
-	drop _study_`i'*
-	qui logit pca logpsa if study == `i'
-	qui replace study_i = `i' in `i'
-	qui replace beta = _b[logpsa] in `i'
-	qui replace se = _se[logpsa] in `i'	
-}
-
-*Cubic spline
-twoway (line study_2 logpsa if logpsa > -1.6 & logpsa < 2.3) (line study_3 logpsa if logpsa > -1.6 & logpsa < 2.3) (line study_4 logpsa if logpsa > -1.6 & logpsa < 2.3) (line study_5 logpsa if logpsa > -1.6 & logpsa < 2.3), xtitle("Log-PSA") ytitle("Prostate Cancer Risk") legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT")) xline(1.099 1.386)
-graph export "Graphs\Final graphs\Appendix\Cubic Splines PCa-PSA (IMPUTED).tif", as(tif) replace
+keep advanced5 advanced5_se study type
+rename advanced5 md5
+rename advanced5_se md5_se
+gen outcome = "Advanced"
+save "Complete case - advanced pca.dta", replace
 
 ********************************************************************************
 
 *IPD imputation and analyses
-{
+
 *Imputations
 {
-*IPD
-use "IPD All clear.dta", clear
-replace ethnicity = 1 if study == 2
-keep if ethnicity == 1
-
-save "IPD All clear.dta", replace
 
 *Imputations - linear
 *All
@@ -320,6 +203,7 @@ save "Imputed data (categorical, advanced).dta", replace
 }
 ********************************************************************************
 *Analyses
+{
 *LINEAR Analysis
 use "Imputed data (linear).dta", clear
 
@@ -852,26 +736,788 @@ save "IPD PCa - complete (categorical).dta", replace
 
 
 
-
+}
 ********************************************************************************
+
+*Graphs & Tables for appendix
+{
+
+*Cubic splines (complete case)
+*BMI - PSA
+use "IPD All clear.dta", clear
+
+sort study bmi
+gen logpsa_age = .
+gen study_i = .
+gen se = .
+gen beta = .
+foreach i in 2 3 4 5 {
+	reg logpsa age if study == `i'
+	local beta = _b[age]
+	replace logpsa_age = logpsa+logpsa*(age-60)*`beta' if study == `i'
+	bspline if study == `i', xvar(bmi) knots(0 24.8 27 30 100) p(3) gen(_study_`i')
+	qui reg logpsa_age _study_`i'*, noconstant
+	predict study_`i'
+	drop _study_`i'*
+	qui reg logpsa_age bmi if study == `i'
+	qui replace study_i = `i' in `i'
+	qui replace beta = _b[bmi] in `i'
+	qui replace se = _se[bmi] in `i'	
 }
 
+twoway (line study_2 bmi if bmi >= 19.8 & bmi <=34.5) (line study_3 bmi if bmi >= 20.4 & bmi <=41) (line study_4 bmi if bmi >= 19.9 & bmi <=40.5) (line study_5 bmi if bmi >= 19.8 & bmi <=39.3) , ytitle("log PSA") legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT")) 
+graph export "$cd_graphs\IPD - BMI-logPSA splines.tif", as(tif) replace
 
+*BMI - PCa
+use "IPD All clear.dta", clear
 
+sort study bmi
+gen logpsa_age = .
+gen study_i = .
+gen se = .
+gen beta = .
+foreach i in 2 3 4 5 {
+	bspline if study == `i', xvar(bmi) knots(0 24.8 27 30 100) p(3) gen(_study_`i')
+	qui logit pca _study_`i'*, noconstant
+	predict study_`i'
+	qui logit pca bmi if study == `i'
+	qui replace study_i = `i' in `i'
+	qui replace beta = _b[bmi] in `i'
+	qui replace se = _se[bmi] in `i'	
+}
 
+twoway (line study_2 bmi if bmi >= 19.8 & bmi <=34.5) (line study_3 bmi if bmi >= 20.4 & bmi <=41) (line study_4 bmi if bmi >= 19.9 & bmi <=40.5) (line study_5 bmi if bmi >= 19.8 & bmi <=39.3) , ytitle("Prostate Cancer Risk") legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT")) 
+graph export "$cd_graphs\IPD - BMI-PCa splines.tif", as(tif) replace
 
+*PSA - PCa
+use "IPD All clear.dta", clear
+
+sort study psa
+gen study_i = .
+gen se = .
+gen beta = .
+foreach i in 2 3 4 5 {
+	if `i' == 2 {
+		bspline if study == `i' & psa >= 0.2 & psa <= 13.3, xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
+	}
+	if `i' == 3 {
+		bspline if study == `i' & psa >= 0.3 & psa <=3, xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
+	}	
+	if `i' == 4 {
+		bspline if study == `i' & psa >= 4, xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
+	}
+	if `i' == 5 {
+		bspline if study == `i' & psa >= 3, xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
+	}
+	qui logit pca _study_`i'*, noconstant
+	predict study_`i'
+	drop _study_`i'*
+	qui logit pca logpsa if study == `i'
+	qui replace study_i = `i' in `i'
+	qui replace beta = _b[logpsa] in `i'
+	qui replace se = _se[logpsa] in `i'	
+}
+
+twoway (line study_2 logpsa if logpsa >= -1.6 & logpsa <= 2.4) (line study_3 logpsa if logpsa >= -1.6 & logpsa <= 2.4) (line study_4 logpsa if psa >= 4 & logpsa <= 2.4) (line study_5 logpsa if psa >= 3 & logpsa <= 2.4), xtitle("Log-PSA") ytitle("Prostate Cancer Risk") legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT")) xline(1.099 1.386)
+graph export "$cd_graphs\IPD - PSA-PCa splines.tif", as(tif) replace width(1200)
 
 ********************************************************************************
+
+*Cubic splines (imputed)
+*BMI - PSA
+use "Imputed data (linear).dta", clear
+
+keep if _mi_m == 1
+replace psa = exp(logpsa)
+sort study logpsa
+gen study_i = .
+gen se = .
+gen beta = .
+foreach i in 2 3 4 5 {
+	if `i' == 2 {
+		bspline if study == `i' , xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
+	}
+	if `i' == 3 {
+		bspline if study == `i' , xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
+	}	
+	if `i' == 4 {
+		bspline if study == `i' , xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
+	}
+	if `i' == 5 {
+		bspline if study == `i' , xvar(logpsa) knots(-6 -0.5 0 0.5 8) p(3) gen(_study_`i')
+	}
+	qui logit pca _study_`i'*, noconstant
+	predict study_`i'
+	drop _study_`i'*
+	qui logit pca logpsa if study == `i'
+	qui replace study_i = `i' in `i'
+	qui replace beta = _b[logpsa] in `i'
+	qui replace se = _se[logpsa] in `i'	
+}
+
+twoway (line study_2 logpsa if logpsa >= -1.6 & logpsa <= 2.4) (line study_3 logpsa if logpsa >= -1.2 & logpsa <= 1.1) (line study_4 logpsa if logpsa >= -1.8 & logpsa <= 2.4) (line study_5 logpsa if logpsa >= -1.6 & logpsa <= 2.4), xtitle("Log-PSA") ytitle("Prostate Cancer Risk") legend(label(1 "Krimpen") label(2 "PCPT") label(3 "PLCO") label(4 "ProtecT")) xline(1.099 1.386)
+graph export "$cd_graphs\IPD - PSA-PCa splines.tif (IMPUTED).tif", as(tif) replace width(1200)
+
+********************************************************************************
+
+*Forest plots for appendix
+use "IPD PCa - complete", clear
+replace type = "Imputed"
+append using "Complete case - pca"
+replace outcome = "All" if outcome == ""
+append using "Complete case - advanced pca"
+replace outcome = "Advanced" if outcome == ""
+drop if study == "PCPT"
+replace study = studyname if study == ""
+gen type2 = 0
+replace type2 = 1 if type == "Imputed"
+label define type 0 "Not Imputed" 1 "Imputed"
+label values type2 type
+sort type2 study
+
+metan md5 md5_se if outcome == "All", by(type2) label(namevar = study) eform nooverall xlabel(0.85, 0.9, 0.95, 1.05) xtitle("OR for PCa per 5 kg/m{superscript:2} increase BMI", size(vsmall)) force xline(-0.0576, lpattern(shortdash) lcolor(maroon) lwidth(thin)) random xline(-0.005, lpattern(shortdash) lcolor(maroon) lwidth(thin))
+graph export "$cd_graphs\Appendix IPD PCa.tif", replace as(tif) width(1200)
+
+metan md5 md5_se if outcome == "Advanced", by(type2) label(namevar = study) eform nooverall xlabel(0.8, 0.9, 1.1, 1.2, 1.3) xtitle("OR for advanced PCa per 5 kg/m{superscript:2} increase BMI", size(vsmall)) force xline(-0.0171, lpattern(shortdash) lcolor(maroon) lwidth(thin)) xline(0.0159, lpattern(shortdash) lcolor(maroon) lwidth(thin)) random
+graph export "$cd_graphs\Appendix IPD aPCa.tif", replace as(tif) width(1200)
+
+********************************************************************************
+
+*Table A1
+
+use "IPD All clear.dta", clear
+gen variable = ""
+replace variable = "N" in 2
+replace variable = "Missing data" in 3
+replace variable = "PCa (N [%])" in 4
+replace variable = "BMI (N [%])" in 5
+replace variable = "Log-PSA (N [%])" in 6
+replace variable = "Family history PCa (N [%])" in 7
+replace variable = "Missing data for:" in 8
+replace variable = "0 variables" in 9
+replace variable = "1 variable" in 10
+replace variable = "2 variables" in 11
+replace variable = "3 variables" in 12
+replace variable = "4 variables" in 13
+
+forvalues i = 1/5 {
+	gen v`i' = ""
+}
+replace v2 = "Krimpen" in 1
+replace v3 = "PCPT" in 1
+replace v4 = "PLCO" in 1
+replace v5 = "ProtecT" in 1
+replace v1 = "Total for Analysis" in 1
+
+order variable v2 v4 v5 v1 v3
+
+local i = 2
+foreach study in 2 3 4 5 {
+	qui count if study == `study'
+	local value = r(N)
+	local value: dis %6.0fc `value'
+	local value = subinstr("`value'"," ","",.)
+	qui replace v`study' = "`value'" in 2
+}
+local value = c(N)
+local value: dis %6.0fc `value'
+local value = subinstr("`value'"," ","",.)
+qui replace v1 = "`value'" in 2
+
+local i = 4
+foreach var of varlist pca bmi logpsa familyhistory {
+	foreach study in 2 3 4 5 {
+		qui count if `var' == . & study == `study'
+		local n = r(N)
+		qui count if study == `study'
+		local N = r(N)
+		
+		local percent = `n'*100/`N'
+		local percent: dis %3.1f `percent'
+		
+		local n: dis %6.0fc `n'
+		local n = subinstr("`n'"," ","",.)
+		
+		local value = "`n' (`percent')"
+		qui replace v`study' = "`value'" in `i'
+
+	}
+	qui count if `var' == . & study != 3
+	local n = r(N)
+	qui count if study != 3
+	local N = r(N)
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v1 = "`value'" in `i'	
+	
+	local i = `i'+1
+	gen `var'_miss = 1 if `var' == .
+	replace `var'_miss = 0 if `var'_miss == .
+}
+
+gen x = pca_miss + bmi_miss + logpsa_miss + familyhistory_miss
+
+local i = 9
+forvalues k = 0/4 {
+	foreach study in 2 3 4 5 {
+
+		qui count if x == `k' & study == `study'
+		local n = r(N)
+		qui count if study == `study'
+		local N = r(N)
+		
+		local percent = `n'*100/`N'
+		local percent: dis %3.1f `percent'
+		
+		local n: dis %6.0fc `n'
+		local n = subinstr("`n'"," ","",.)
+		
+		local value = "`n' (`percent')"
+		qui replace v`study' = "`value'" in `i'
+
+	}
+	qui count if x == `k' & study != 3
+	local n = r(N)
+	qui count if study != 3
+	local N = r(N)
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v1 = "`value'" in `i'
+	
+	local i = `i'+1
+}
+
+keep variable-v3
+keep in 1/`i'
+
+save "$cd_tables\Table A1.dta", replace
+
+**********
+
+*Table A3
+use "Imputed data (linear).dta", clear
+gen variable = ""
+replace variable = "N" in 2
+replace variable = "Men who were biopsied (prostate cancer status not imputed)" in 3
+replace variable = "Participants (% of total)" in 4
+replace variable = "PCa (%)" in 5
+replace variable = "Advanced PCa (%)*" in 6
+replace variable = "No PCa (%)" in 7
+replace variable = "Men who were not biopsied (prostate cancer status imputed)" in 8
+replace variable = "Participants (% of total)" in 9
+replace variable = "PCa (%)" in 10
+replace variable = "Advanced PCa (%)*" in 11
+replace variable = "No PCa (%)" in 12
+replace variable = "All participants (men who were and were not biopsied combined)" in 13
+replace variable = "Participants" in 14
+replace variable = "PCa (%)" in 15
+replace variable = "Advanced PCa (%)*" in 16
+replace variable = "No PCa (%)" in 17
+replace variable = "Age (mean, [SD])" in 18
+replace variable = "BMI (mean, [SD])" in 19
+replace variable = "Log-PSA (mean, [SD])" in 20
+replace variable = "Family history PCa (%)" in 21
+
+
+forvalues i = 1/5 {
+	gen v`i' = ""
+}
+replace v2 = "Krimpen" in 1
+replace v3 = "PCPT" in 1
+replace v4 = "PLCO" in 1
+replace v5 = "ProtecT" in 1
+replace v1 = "Total for Analysis" in 1
+
+order variable v2 v4 v5 v1 v3
+
+local i = 2
+foreach study in 1 2 3 4 5 {
+	if `study' == 1 {
+		qui count if _mi_m == 0
+	}
+	else {
+		qui count if study == `study' & _mi_m == 0
+	}
+	local value = r(N)
+	local value: dis %6.0fc `value'
+	local value = subinstr("`value'"," ","",.)
+	qui replace v`study' = "`value'" in 2
+}
+
+*Complete case
+
+foreach study in 1 2 3 4 5 {
+	local i = 4
+	*N
+	if `study' == 1 {
+		qui count if pca != . & _mi_m == 0 & study != 3
+	}
+	else {
+		qui count if pca != . & study == `study' & _mi_m == 0
+	}
+	local n = r(N)
+	
+	if `study' == 1 {
+		qui count if _mi_m == 0 & study != 3
+	}
+	else {
+		qui count if study == `study' & _mi_m == 0
+	}
+	local N = r(N)
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+	
+	*PCa
+	if `study' == 1 {
+		qui count if pca == 1 & _mi_m == 0 & study != 3
+	}
+	else {
+		qui count if pca == 1 & study == `study' & _mi_m == 0
+	}
+	local n = r(N)
+	
+	if `study' == 1 {
+		qui count if pca != . & _mi_m == 0 & study != 3
+	}
+	else {
+		qui count if pca != . & study == `study' & _mi_m == 0
+	}
+	local N = r(N)
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+	
+	*aPCa
+	if `study' == 1 {
+		qui count if advanced_pca == 1 & _mi_m == 0 & study != 3
+	}
+	else {
+		qui count if advanced_pca == 1 & study == `study' & _mi_m == 0
+	}
+	local n = r(N)
+	
+	if `study' == 1 {
+		qui count if advanced_pca != . & _mi_m == 0 & study != 3
+	}
+	else {
+		qui count if advanced_pca != . & study == `study' & _mi_m == 0
+	}
+	local N = r(N)
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+	
+	*No PCa
+	if `study' == 1 {
+		qui count if pca == 0 & _mi_m == 0 & study != 3
+	}
+	else {
+		qui count if pca == 0 & study == `study' & _mi_m == 0
+	}
+	local n = r(N)
+	
+	if `study' == 1 {
+		qui count if pca != . & _mi_m == 0 & study != 3
+	}
+	else {
+		qui count if pca != . & study == `study' & _mi_m == 0
+	}
+	local N = r(N)
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+}
+
+*Imputed only
+	
+foreach study in 1 2 3 4 5 {
+	local i = 9
+	*N
+	if `study' == 1 {
+		qui count if pca != . & _mi_m != 0 & study != 3 & biopsy == 0
+	}
+	else {
+		qui count if pca != . & study == `study' & _mi_m != 0 & biopsy == 0
+	}
+	local n = r(N)/100
+	
+	if `study' == 1 {
+		qui count if _mi_m != 0 & study != 3 
+	}
+	else {
+		qui count if study == `study' & _mi_m != 0
+	}
+	local N = r(N)/100
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+	
+	*PCa
+	if `study' == 1 {
+		qui count if pca == 1 & _mi_m != 0 & study != 3 & biopsy == 0
+	}
+	else {
+		qui count if pca == 1 & study == `study' & _mi_m != 0 & biopsy == 0
+	}
+	local n = r(N)/100
+	
+	if `study' == 1 {
+		qui count if pca != . & _mi_m != 0 & study != 3 & biopsy == 0
+	}
+	else {
+		qui count if pca != . & study == `study' & _mi_m != 0 & biopsy == 0
+	}
+	local N = r(N)/100
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+	
+	*aPCa
+	*Needs the advanced imputation data	
+	local i = `i' + 1
+	
+	*No PCa
+	if `study' == 1 {
+		qui count if pca == 0 & _mi_m != 0 & study != 3 & biopsy == 0
+	}
+	else {
+		qui count if pca == 0 & study == `study' & _mi_m != 0 & biopsy == 0
+	}
+	local n = r(N)/100
+	
+	if `study' == 1 {
+		qui count if pca != . & _mi_m != 0 & study != 3 & biopsy == 0
+	}
+	else {
+		qui count if pca != . & study == `study' & _mi_m != 0 & biopsy == 0
+	}
+	local N = r(N)/100
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+}
+
+*Imputed (all)
+	
+foreach study in 1 2 3 4 5 {
+	local i = 14
+	*N
+	if `study' == 1 {
+		qui count if pca != . & _mi_m != 0 & study != 3 
+	}
+	else {
+		qui count if pca != . & study == `study' & _mi_m != 0 
+	}
+	local n = r(N)/100
+	
+	if `study' == 1 {
+		qui count if _mi_m != 0 & study != 3
+	}
+	else {
+		qui count if study == `study' & _mi_m != 0
+	}
+	local N = r(N)/100
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+	
+	*PCa
+	if `study' == 1 {
+		qui count if pca == 1 & _mi_m != 0 & study != 3 
+	}
+	else {
+		qui count if pca == 1 & study == `study' & _mi_m != 0 
+	}
+	local n = r(N)/100
+	
+	if `study' == 1 {
+		qui count if pca != . & _mi_m != 0 & study != 3 
+	}
+	else {
+		qui count if pca != . & study == `study' & _mi_m != 0 
+	}
+	local N = r(N)/100
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+	
+	*aPCa
+	*Needs the advanced imputation data	
+	local i = `i' + 1
+	
+	*No PCa
+	if `study' == 1 {
+		qui count if pca == 0 & _mi_m != 0 & study != 3 
+	}
+	else {
+		qui count if pca == 0 & study == `study' & _mi_m != 0 
+	}
+	local n = r(N)/100
+	
+	if `study' == 1 {
+		qui count if pca != . & _mi_m != 0 & study != 3 
+	}
+	else {
+		qui count if pca != . & study == `study' & _mi_m != 0 
+	}
+	local N = r(N)/100
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+}
+
+*Age, BMI, log(PSA)
+local i = 18
+foreach var of varlist age bmi logpsa {
+	foreach study in 1 2 3 4 5 {
+		if `study' == 1 {
+			qui su `var' if _mi_m != 0 & study != 3 
+		}
+		else {
+			qui su `var' if _mi_m != 0 &study == `study'
+		}
+		local mean = r(mean)
+		local sd = r(sd)
+
+		if "`var'" == "logpsa" {
+			local mean: dis %3.2f `mean'
+		}
+		else {
+			local mean: dis %3.1f `mean'
+		}		
+
+		if "`var'" == "logpsa" {
+			local sd: dis %3.2f `sd'
+		}
+		else {
+			local sd: dis %2.1f `sd'
+		}
+		
+		local value = "`mean' (`sd')"
+		qui replace v`study' = "`value'" in `i'
+		
+	}
+	local i = `i'+1
+}
+
+*Family history
+local i = 21
+foreach study in 1 2 3 4 5 {
+	if `study' == 1 {
+		qui count if familyhistory == 1 & _mi_m != 0 & study != 3 
+	}
+	else {
+		qui count if familyhistory == 1 & study == `study' & _mi_m != 0 
+	}
+	local n = r(N)/100
+	
+	if `study' == 1 {
+		qui count if _mi_m != 0 & study != 3
+	}
+	else {
+		qui count if study == `study' & _mi_m != 0
+	}
+	local N = r(N)/100
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+}
+
+keep variable - v3
+keep in 1/21
+
+save "$cd_tables\Table A3.dta", replace 
+
+*Advanced PCa
+use "Imputed data (linear, advanced).dta", clear
+
+forvalues i = 1/5 {
+	gen v`i' = ""
+}
+
+order v2 v4 v5 v1 v3
+
+forvalues study = 1/5 {
+	local i = 1
+	*Imputed only
+	if `study' == 1 {
+		qui count if advanced_pca == 1 & _mi_m != 0 & study != 3 & biopsy == 0
+	}
+	else {
+		qui count if advanced_pca == 1 & study == `study' & _mi_m != 0 & biopsy == 0
+	}
+	local n = r(N)/100
+	
+	if `study' == 1 {
+		qui count if advanced_pca != . & _mi_m == 0 & study != 3 & biopsy == 0
+	}
+	else {
+		qui count if advanced_pca != . & study == `study' & _mi_m != 0 & biopsy == 0
+	}
+	local N = r(N)/100
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+	
+	*Imputed (all)
+	if `study' == 1 {
+		qui count if advanced_pca == 1 & _mi_m != 0 & study != 3 
+	}
+	else {
+		qui count if advanced_pca == 1 & study == `study' & _mi_m != 0 
+	}
+	local n = r(N)/100
+	
+	if `study' == 1 {
+		qui count if advanced_pca != . & _mi_m == 0 & study != 3
+	}
+	else {
+		qui count if advanced_pca != . & study == `study' & _mi_m != 0
+	}
+	local N = r(N)/100
+	
+	local percent = `n'*100/`N'
+	local percent: dis %3.1f `percent'
+	
+	local n: dis %6.0fc `n'
+	local n = subinstr("`n'"," ","",.)
+	
+	local value = "`n' (`percent')"
+	qui replace v`study' = "`value'" in `i'
+	
+	local i = `i' + 1
+}
+
+keep in 1/2
+keep v2 - v3
+
+save "$cd_tables\Table A3 advanced.dta", replace
+
+use "$cd_tables\Table A3.dta", clear 
+append using "$cd_tables\Table A3 advanced.dta"
+forvalues i = 1/5 {
+	qui replace v`i' = v`i'[22] in 11
+	qui replace v`i' = v`i'[23] in 16
+}
+drop in 22/23
+save "$cd_tables\Table A3.dta", replace 
+
 ********************************************************************************
 
 *IPD analysis complete, ready to add to studies from systematic review
 
 ********************************************************************************
-********************************************************************************
 
 }
 
-
+}
 ********************************************************************************
 ********************************************************************************
 
@@ -1852,13 +2498,9 @@ save "Tables\PSA - Supplementary table (categorical).dta", replace
 
 
 ********************************************************************************
-********************************************************************************
-
 
 *PSA analyses complete
 
-
-********************************************************************************
 ********************************************************************************
 
 }
@@ -1869,7 +2511,6 @@ save "Tables\PSA - Supplementary table (categorical).dta", replace
 
 *Prostate Cancer analyses
 {
-cd ""
 
 *MD
 {
@@ -3123,24 +3764,24 @@ replace timeof = "Same time" if author == "Boehm"
 
 *GRAPH
 metan md5 md5_se if outcome == "All" & or_hr == "HR", random second(fixed) effect("HR") eform label(namevar=author, yearvar=year) sortby(year author) xlabel(0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4) force textsize(110) xtitle("HR for prostate cancer per 5 kg/m{superscript:2} increase BMI", size(vsmall)) rcols(cases controls)
-graph export "Graphs\Final graphs\For processing\PCa All (HR).tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa All (HR).tif", replace as(tif) width(1200)
 metan md5 md5_se if outcome == "All" & or_hr == "OR", random second(fixed) effect("OR") by(timeof) eform label(namevar=author, yearvar=year) sortby(year author) xlabel(0.4, 0.5, 0.66, 0.8, 1.25, 1.5, 2, 2.5) force textsize(105) xtitle("OR for prostate cancer per 5 kg/m{superscript:2} increase BMI", size(vsmall)) rcols(cases controls)
-graph export "Graphs\Final graphs\For processing\PCa All (OR).tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa All (OR).tif", replace as(tif) width(1200)
 
 metafunnel md5 md5_se if outcome == "All" & or_hr == "HR" & md5_se<1, xtitle("HR for prostate cancer per 5 kg/m{superscript:2} increase in BMI") eform ytitle("SE of log(HR)")
-graph export "Graphs\Final graphs\For processing\PCa All - Funnel (HR).tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa All - Funnel (HR).tif", replace as(tif) width(1200)
 metafunnel md5 md5_se if outcome == "All" & or_hr == "OR" & md5_se<1, xtitle("OR for prostate cancer per 5 kg/m{superscript:2} increase in BMI") eform ytitle("SE of log(OR)")
-graph export "Graphs\Final graphs\For processing\PCa All - Funnel (OR).tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa All - Funnel (OR).tif", replace as(tif) width(1200)
 
 metan md5 md5_se if outcome == "Advanced" & or_hr == "HR", random second(fixed) effect("HR") eform label(namevar=author, yearvar=year) sortby(year author) xlabel(0.66, 0.8, 1.25, 1.5) force textsize(125) xtitle("HR for advanced prostate cancer per 5 kg/m{superscript:2} increase BMI", size(vsmall)) rcols(cases controls)
-graph export "Graphs\Final graphs\For processing\PCa Advanced (HR).tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa Advanced (HR).tif", replace as(tif) width(1200)
 metan md5 md5_se if outcome == "Advanced" & or_hr == "OR", random second(fixed) effect("OR") by(timeof) eform label(namevar=author, yearvar=year) sortby(year author) xlabel(0.66, 0.8, 1.25, 1.5) force textsize(125) xtitle("OR for advanced prostate cancer per 5 kg/m{superscript:2} increase BMI", size(vsmall)) rcols(cases controls)
-graph export "Graphs\Final graphs\For processing\PCa Advanced (OR).tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa Advanced (OR).tif", replace as(tif) width(1200)
 
 metafunnel md5 md5_se if outcome == "Advanced" & or_hr == "HR" & md5_se<1, xtitle("HR for advanced prostate cancer per 5 kg/m{superscript:2} increase in BMI") eform ytitle("SE of log(HR)")
-graph export "Graphs\Final graphs\For processing\PCa Advanced - Funnel (HR).tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa Advanced - Funnel (HR).tif", replace as(tif) width(1200)
 metafunnel md5 md5_se if outcome == "Advanced" & or_hr == "OR" & md5_se<1, xtitle("OR for advanced prostate cancer per 5 kg/m{superscript:2} increase in BMI") eform ytitle("SE of log(OR)")
-graph export "Graphs\Final graphs\For processing\PCa Advanced - Funnel (OR).tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa Advanced - Funnel (OR).tif", replace as(tif) width(1200)
 
 *Albatross
 
@@ -3163,9 +3804,9 @@ qui gen r = cases/controls
 save "PCa complete.dta", replace
 
 albatross n p e if outcome == "All", type(smd) contours(0.02 0.05 0.1) r(r) by(included) adjust color
-graph export "Graphs\Final graphs\For processing\PCa All - Albatross Adjusted.tif", replace
+graph export "$cd_graphs\Final graphs\For processing\PCa All - Albatross Adjusted.tif", replace
 albatross n p e if outcome == "Advanced", type(smd) contours(0.02 0.05 0.1) r(r) by(included) adjust color
-graph export "Graphs\Final graphs\For processing\PCa Advanced - Albatross Adjusted.tif", replace
+graph export "$cd_graphs\Final graphs\For processing\PCa Advanced - Albatross Adjusted.tif", replace
 
 *Meta-regression - PCa
 use "PCa complete.dta", clear
@@ -3179,6 +3820,51 @@ replace midyear = 2004 if author == "ProtecT"
 replace midyear = 1998 if author == "PLCO"
 replace midyear = 1995 if author == "Krimpen"
 
+*Mark case-control studies
+gen case_control = 0
+{
+qui replace case_control = 1 if endnoteid == 19122
+qui replace case_control = 1 if endnoteid == 28720
+qui replace case_control = 1 if endnoteid == 4352
+qui replace case_control = 1 if endnoteid == 24897
+qui replace case_control = 1 if endnoteid == 24897
+qui replace case_control = 1 if endnoteid == 24897
+qui replace case_control = 1 if endnoteid == 24897
+qui replace case_control = 1 if endnoteid == 24055
+qui replace case_control = 1 if endnoteid == 44677
+qui replace case_control = 1 if endnoteid == 23481
+qui replace case_control = 1 if endnoteid == 22642
+qui replace case_control = 1 if endnoteid == 44036
+qui replace case_control = 1 if endnoteid == 43538
+qui replace case_control = 1 if endnoteid == 20401
+qui replace case_control = 1 if endnoteid == 42842
+qui replace case_control = 1 if endnoteid == 42930
+qui replace case_control = 1 if endnoteid == 208335
+qui replace case_control = 1 if endnoteid == 42467
+qui replace case_control = 1 if endnoteid == 18681
+qui replace case_control = 1 if endnoteid == 16233
+qui replace case_control = 1 if endnoteid == 28720
+qui replace case_control = 1 if endnoteid == 36021
+qui replace case_control = 1 if endnoteid == 8029
+qui replace case_control = 1 if endnoteid == 8774
+qui replace case_control = 1 if endnoteid == 207948
+qui replace case_control = 1 if endnoteid == 8698
+qui replace case_control = 1 if endnoteid == 4634
+qui replace case_control = 1 if endnoteid == 4352
+qui replace case_control = 1 if endnoteid == 210051
+qui replace case_control = 1 if endnoteid == 209177
+
+*Cross-sectional
+qui replace case_control = 1 if endnoteid == 18982 | author == "PLCO" | author == "ProtecT"
+
+label define case_control 0 "Cohort/Nested case-control" 1 "Case-control/Cross-sectional"
+label values case_control case_control
+}
+
+metan md5 md5_se if outcome == "All" & or_hr == "OR", random second(fixed) effect("OR") by(case_control) eform label(namevar=author, yearvar=year) sortby(year author) xlabel(0.4, 0.5, 0.66, 0.8, 1.25, 1.5, 2, 2.5) force textsize(105) xtitle("OR for prostate cancer per 5 kg/m{superscript:2} increase BMI", size(vsmall)) rcols(cases controls)
+graph export "$cd_graphs\Final graphs\For processing\PCa All (OR cohort sensitivity).tif", replace as(tif) width(1200)
+
+*Ethnicity
 qui gen ethnic_bin = 1
 qui replace ethnic_bin = 2 if ethnicity == "Chinese" | ethnicity == "Japan" | ethnicity == "Japanese" | ethnicity == "Japanese (100)" | ethnicity == "Korean" | ///
 ethnicity == "Black" | ethnicity=="Multiethnic" | author == "Whittemore (Blacks)" | ethnicity == "Asian" | ethnicity == "Black (100%)" | ethnicity == "Chinese-American" | ///
@@ -3333,14 +4019,21 @@ replace timeof = "Same time" if author == "Boehm"
 replace or_hr2 = "OR - same time" if author == "Boehm"
 
 metan overweight overweight_se if outcome == "All", random second(fixed) effect("HR|OR") by(or_hr2) eform label(namevar=author, yearvar=year) sortby(year author) xlabel(0.5, 0.67, 1.5, 2) force textsize(110) nooverall xtitle("HR and OR for prostate cancer, overweight versus normal weight", size(vsmall)) rcols(n1 n2)
-graph export "Graphs\Final graphs\For processing\PCa All - Overweight.tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa All - Overweight.tif", replace as(tif) width(1200)
 metan obese obese_se if outcome == "All", random second(fixed) by(or_hr2) effect("HR|OR") eform label(namevar=author, yearvar=year) sortby(year author) xlabel(0.5, 0.67, 1.5, 2) force textsize(110) nooverall xtitle("HR and OR for prostate cancer, obese versus normal weight", size(vsmall)) rcols(n1 n3)
-graph export "Graphs\Final graphs\For processing\PCa All - Obese.tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa All - Obese.tif", replace as(tif) width(1200)
 
 metan overweight overweight_se if outcome == "Advanced", random second(fixed) effect("HR|OR") by(or_hr) eform label(namevar=author, yearvar=year) sortby(year author) xlabel(0.5, 0.67, 1.5, 2) force textsize(150) nooverall xtitle("HR and OR for advanced prostate cancer, overweight versus normal weight", size(vsmall)) rcols(n1 n2)
-graph export "Graphs\Final graphs\For processing\PCa Advanced - Overweight.tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa Advanced - Overweight.tif", replace as(tif) width(1200)
 metan obese obese_se if outcome == "Advanced", random second(fixed) effect("HR|OR") by(or_hr) eform label(namevar=author, yearvar=year) sortby(year author) xlabel(0.5, 0.67, 1.5, 2) force textsize(150) nooverall xtitle("HR and OR for advanced prostate cancer, obese versus normal weight", size(vsmall)) rcols(n1 n3)
-graph export "Graphs\Final graphs\For processing\PCa Advanced - Obese.tif", replace as(tif) width(1200)
+graph export "$cd_graphs\Final graphs\For processing\PCa Advanced - Obese.tif", replace as(tif) width(1200)
+
+*Combine OR categories
+metan overweight overweight_se if outcome == "All", random by(or_hr) eform nograph
+metan obese obese_se if outcome == "All", random by(or_hr) eform nograph
+
+metan overweight overweight_se if outcome == "Advanced", random effect("HR|OR") by(or_hr) eform nograph
+metan obese obese_se if outcome == "Advanced", random seffect("HR|OR") by(or_hr) eform nograph
 
 *Extra analysis - OR for obesity (PCa all), looking at difference between IPD and non-IPD
 metan obese obese_se if outcome == "All" & or_hr == "OR", random second(fixed) by(type) eform label(namevar=author, yearvar=year) sortby(year author) xlabel(0.5, 0.67, 1.5, 2) force textsize(110) nooverall xtitle("OR for prostate cancer, obese versus normal weight (IPD vs AD)", size(vsmall)) rcols(n1 n2)
